@@ -119,6 +119,7 @@ struct Esp32C3MachineState {
     Esp32C3AnaState ana;
     Esp32FeState fe;
     Esp32c3PwrMngState pwrmng;
+    uint32_t *io_regs;
 };
 
 /* Fake register used by ESP-IDF application to determine whether the code is running on real hardware or on QEMU */
@@ -140,6 +141,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(Esp32C3MachineState, ESP32C3_MACHINE)
 enum MemoryRegions {
     ESP32C3_MEMREGION_IROM,
     ESP32C3_MEMREGION_DROM,
+    ESP32C3_MEMREGION_WIFIMAC,
     ESP32C3_MEMREGION_DRAM,
     ESP32C3_MEMREGION_IRAM,
     ESP32C3_MEMREGION_RTCFAST,
@@ -156,6 +158,7 @@ static const struct MemmapEntry {
 } esp32c3_memmap[] = {
     [ESP32C3_MEMREGION_IROM]    = { 0x40000000,  0x60000 },
     [ESP32C3_MEMREGION_DROM]    = { 0x3ff00000,  0x20000 },
+    [ESP32C3_MEMREGION_WIFIMAC] = { 0x3fc00000,  0x80000 },
     [ESP32C3_MEMREGION_DRAM]    = { 0x3fc80000,  0x60000 },
     /* Merge SRAM0 and SRAM1 into a single entry */
     [ESP32C3_MEMREGION_IRAM]    = { 0x4037c000,  0x60000 + ESP32C3_INTERNAL_SRAM0_SIZE },
@@ -362,6 +365,7 @@ static bool addr_in_range(hwaddr addr, hwaddr start, hwaddr end)
 
 static uint64_t esp32c3_io_read(void *opaque, hwaddr addr, unsigned int size)
 {
+    Esp32C3MachineState *ms = ESP32C3_MACHINE(opaque);
     if (addr_in_range(addr + ESP32C3_IO_START_ADDR, DR_REG_RTC_I2C_BASE, DR_REG_RTC_I2C_BASE + 0x100)) {
         return (uint32_t) 0xffffff;
     } else if (addr + ESP32C3_IO_START_ADDR == DR_REG_SYSCON_BASE + A_SYSCON_ORIGIN_REG) {
@@ -378,6 +382,9 @@ static uint64_t esp32c3_io_read(void *opaque, hwaddr addr, unsigned int size)
     } else if (addr + ESP32C3_IO_START_ADDR == DR_REG_ASSIST_DEBUG_BASE + A_ASSIST_DEBUG_CORE_0_DEBUG_MODE_REG) {
         return 0;
     } else {
+        if (ms && ms->io_regs && (addr < 0xd1000)) {
+            return ms->io_regs[addr / 4];
+        }
 #if ESP32C3_IO_WARNING
         if (addr_in_range(addr + ESP32C3_IO_START_ADDR, DR_REG_SYSCON_BASE,DR_REG_SYSCON_BASE + 0x1000)){
             warn_report("[ESP32-C3] SYSCON          Unsupported read to $%08lx\n", ESP32C3_IO_START_ADDR + addr);  
@@ -410,9 +417,14 @@ static uint64_t esp32c3_io_read(void *opaque, hwaddr addr, unsigned int size)
     }
     return 0;
 }
-
 static void esp32c3_io_write(void *opaque, hwaddr addr, uint64_t value, unsigned int size)
 {
+    Esp32C3MachineState *ms = ESP32C3_MACHINE(opaque);
+
+    if (ms && ms->io_regs && (addr < 0xd1000)) {
+        ms->io_regs[addr / 4] = (uint32_t)value;
+    }
+
 #if ESP32C3_IO_WARNING
         if (addr_in_range(addr + ESP32C3_IO_START_ADDR, DR_REG_SYSCON_BASE,DR_REG_SYSCON_BASE + 0x1000)){
             warn_report("[ESP32-C3] SYSCON          Unsupported write to $%08lx = %08lx\n", ESP32C3_IO_START_ADDR + addr, value);  
@@ -698,6 +710,11 @@ static void esp32c3_machine_init(MachineState *machine)
     memory_region_init_ram(iram, NULL, "esp32c3.iram", memmap[ESP32C3_MEMREGION_IRAM].size, &error_fatal);
     memory_region_add_subregion(sys_mem, memmap[ESP32C3_MEMREGION_IRAM].base, iram);
 
+    /* Initialize WIFI MAC Memory as regular RAM */
+    MemoryRegion *wifimac = g_new(MemoryRegion, 1);
+    memory_region_init_ram(wifimac, NULL, "esp32c3.wifimac", memmap[ESP32C3_MEMREGION_WIFIMAC].size, &error_fatal);
+    memory_region_add_subregion(sys_mem, memmap[ESP32C3_MEMREGION_WIFIMAC].base, wifimac);
+
     /* Initialize DRAM as an alias to IRAM (not including Internal SRAM 0) */
     MemoryRegion *dram = g_new(MemoryRegion, 1);
     /* DRAM mirrors IRAM for SRAM 1, skip the SRAM 0 area */
@@ -714,8 +731,10 @@ static void esp32c3_machine_init(MachineState *machine)
 
     qdev_realize(DEVICE(&ms->soc), NULL, &error_fatal);
 
+    ms->io_regs = g_malloc0(0xd1000);
+    ms->io_regs[0x26014 / 4] = 0xffffffff; /* SYSCON_WIFI_CLK_EN_REG default */
     memory_region_init_io(&ms->iomem, OBJECT(&ms->soc), &esp32c3_io_ops,
-                          NULL, "esp32c3.iomem", 0xd1000);
+                          ms, "esp32c3.iomem", 0xd1000);
     memory_region_add_subregion(sys_mem, ESP32C3_IO_START_ADDR, &ms->iomem);
 
 
