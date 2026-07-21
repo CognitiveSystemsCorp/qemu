@@ -250,6 +250,21 @@ static int net_socket_mcast_create(struct sockaddr_in *mcastaddr,
         goto fail;
     }
 
+#ifdef __APPLE__
+    /*
+     * Darwin requires SO_REUSEPORT as well as SO_REUSEADDR when multiple
+     * processes bind INADDR_ANY to the same multicast port.  Without it, the
+     * second QEMU instance fails bind() with EADDRINUSE before it can join the
+     * multicast group.
+     */
+    ret = setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &val, sizeof(val));
+    if (ret < 0) {
+        error_setg_errno(errp, errno,
+                         "can't set socket option SO_REUSEPORT");
+        goto fail;
+    }
+#endif
+
     struct in_addr group_addr = mcastaddr->sin_addr;
     if (localaddr) {
         mcastaddr->sin_addr = *localaddr;
