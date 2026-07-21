@@ -38,6 +38,8 @@ typedef struct Esp32WifiState {
     uint32_t receive_queue_count;
     NICConf conf;
     NICState *nic;
+    NICConf espnow_conf;
+    NICState *espnow_nic;
     // various timers
     QEMUTimer *beacon_timer;
     QEMUTimer *inject_timer;
@@ -62,6 +64,7 @@ typedef struct Esp32WifiState {
 
 void Esp32_WLAN_handle_frame(Esp32WifiState *s, struct mac80211_frame *frame);
 void Esp32_WLAN_setup_ap(DeviceState *dev,Esp32WifiState *s);
+void Esp32_WLAN_set_espnow_backend(Esp32WifiState *s, NICInfo *nd);
 void Esp32_WLAN_reset_ap(Esp32WifiState *s);
 void Esp32_sendFrame(Esp32WifiState *s, struct mac80211_frame *frame,int length, int signal_strength);
 void Esp32_WLAN_frame_delivered(Esp32WifiState *s);

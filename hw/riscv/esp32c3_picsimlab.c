@@ -581,6 +581,14 @@ static void esp32c3_init_openeth(Esp32C3MachineState *ms)
             }
             
             qdev_set_nic_properties(DEVICE(&ms->wifi), nd);
+
+            /* Use an optional esp32_wifi NIC as the ESP-NOW transport. */
+            NICInfo *espnow_nd = qemu_find_nic_info(TYPE_ESP32_WIFI,
+                                                    false, NULL);
+            if (espnow_nd) {
+                Esp32_WLAN_set_espnow_backend(&ms->wifi, espnow_nd);
+            }
+
             sbd = SYS_BUS_DEVICE(DEVICE(&ms->wifi));
             sysbus_realize_and_unref(sbd, &error_fatal);
             

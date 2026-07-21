@@ -457,7 +457,9 @@ static ssize_t Esp32_WLAN_receive(NetClientState *ncs,
           /*
            * Send 802.3 frame
            */
-          qemu_send_packet(qemu_get_queue(s->nic), ethernet_frame, ethernet_frame_size);
+          qemu_send_packet(qemu_get_queue(s->espnow_nic ?
+                                          s->espnow_nic : s->nic),
+                           ethernet_frame, ethernet_frame_size);
 
           return size; 
         }
@@ -523,6 +525,17 @@ void Esp32_WLAN_reset_ap(Esp32WifiState *s) {
     s->inject_queue_size = 0;
 }
 
+void Esp32_WLAN_set_espnow_backend(Esp32WifiState *s, NICInfo *nd)
+{
+    memcpy(s->espnow_conf.macaddr.a, s->macaddr,
+           sizeof(s->espnow_conf.macaddr.a));
+    if (nd->netdev) {
+        s->espnow_conf.peers.ncs[0] = nd->netdev;
+        s->espnow_conf.peers.queues = 1;
+    }
+    nd->instantiated = 1;
+}
+
 void Esp32_WLAN_setup_ap(DeviceState *dev,Esp32WifiState *s) {
 
     Esp32_WLAN_reset_ap(s);
@@ -538,6 +551,13 @@ void Esp32_WLAN_setup_ap(DeviceState *dev,Esp32WifiState *s) {
 
     s->nic = qemu_new_nic(&net_info, &s->conf, object_get_typename(OBJECT(s)), dev->id, &dev->mem_reentrancy_guard, s);
     qemu_format_nic_info_str(qemu_get_queue(s->nic), s->macaddr);
+
+    if (s->espnow_conf.peers.queues) {
+        s->espnow_nic = qemu_new_nic(&net_info, &s->espnow_conf,
+                                     object_get_typename(OBJECT(s)),
+                                     "espnow", &dev->mem_reentrancy_guard, s);
+        qemu_format_nic_info_str(qemu_get_queue(s->espnow_nic), s->macaddr);
+    }
 }
 
 static void send_single_frame(Esp32WifiState *s, struct mac80211_frame *frame, struct mac80211_frame *reply) {
@@ -635,7 +655,9 @@ void Esp32_WLAN_handle_frame(Esp32WifiState *s, struct mac80211_frame *frame)
                 /*
                 * Send 802.3 frame
                 */
-                qemu_send_packet(qemu_get_queue(s->nic), ethernet_frame, ethernet_frame_size);
+                qemu_send_packet(qemu_get_queue(s->espnow_nic ?
+                                                s->espnow_nic : s->nic),
+                                 ethernet_frame, ethernet_frame_size);
                  
                 //if destination is not broadcast wait for ack 
                 if(memcmp(&ethernet_frame[0],BROADCAST,6)){ 
@@ -782,4 +804,3 @@ void Esp32_WLAN_handle_frame(Esp32WifiState *s, struct mac80211_frame *frame)
     }
     Esp32_WLAN_frame_delivered(s);
 }
-
