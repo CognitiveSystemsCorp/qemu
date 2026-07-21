@@ -18,6 +18,10 @@
 #define ESP32C3_WIFI_CSI_LEN_SHIFT 8
 #define ESP32C3_WIFI_CSI_LEN_MASK (0x3ffU << ESP32C3_WIFI_CSI_LEN_SHIFT)
 #define ESP32C3_WIFI_CSI_LEN 128
+#define ESP32C3_WIFI_FFT_GAIN_OFFSET 22
+#define ESP32C3_WIFI_AGC_GAIN_OFFSET 23
+#define ESP32C3_WIFI_DEFAULT_FFT_GAIN 2
+#define ESP32C3_WIFI_DEFAULT_AGC_GAIN 32
 
 static uint64_t esp32C3_wifi_read(void *opaque, hwaddr addr, unsigned int size)
 {
@@ -118,6 +122,16 @@ void Esp32_sendFrame(Esp32WifiState *s, mac80211_frame *frame,int length, int si
         .channel=esp32_wifi_channel,
         .timestamp=qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL)/1000,
     };
+
+    /*
+     * These values occupy reserved bytes in the public ESP32-C3 RX-control
+     * definition, but the CSI gain-control component consumes them directly:
+     * byte 22 is signed FFT gain and byte 23 is unsigned AGC gain.
+     */
+    header[ESP32C3_WIFI_FFT_GAIN_OFFSET] =
+        (uint8_t)(int8_t)ESP32C3_WIFI_DEFAULT_FFT_GAIN;
+    header[ESP32C3_WIFI_AGC_GAIN_OFFSET] =
+        ESP32C3_WIFI_DEFAULT_AGC_GAIN;
 
     // These 4 bits are set if the mac addresses previously stored at 0x40 and 0x48
     // match the destination or bssid addresses in the frame
