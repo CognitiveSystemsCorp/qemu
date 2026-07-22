@@ -1,4 +1,5 @@
 #include "qemu/osdep.h"
+#include <math.h>
 #include "qemu/log.h"
 #include "qemu/error-report.h"
 #include "qemu/guest-random.h"
@@ -22,6 +23,71 @@
 #define ESP32C3_WIFI_AGC_GAIN_OFFSET 23
 #define ESP32C3_WIFI_DEFAULT_FFT_GAIN 2
 #define ESP32C3_WIFI_DEFAULT_AGC_GAIN 32
+#define ESP32C3_WIFI_CSI_STABLE_NS (30LL * NANOSECONDS_PER_SECOND)
+#define ESP32C3_WIFI_CSI_MOTION_NS (10LL * NANOSECONDS_PER_SECOND)
+#define ESP32C3_WIFI_CSI_NOISE_PEAK 2
+
+static int8_t esp32c3_wifi_csi_clamp(double value)
+{
+    if (value > 127.0) {
+        return 127;
+    }
+    if (value < -127.0) {
+        return -127;
+    }
+    return (int8_t)lrint(value);
+}
+
+static int esp32c3_wifi_csi_white_noise(void)
+{
+    return rand() % (2 * ESP32C3_WIFI_CSI_NOISE_PEAK + 1) -
+           ESP32C3_WIFI_CSI_NOISE_PEAK;
+}
+
+static void esp32c3_wifi_generate_csi(uint8_t *buf, size_t len,
+                                      int64_t now_ns)
+{
+    const int64_t cycle_ns = ESP32C3_WIFI_CSI_STABLE_NS +
+                             ESP32C3_WIFI_CSI_MOTION_NS;
+    const int64_t cycle_pos = now_ns % cycle_ns;
+    const bool motion = cycle_pos >= ESP32C3_WIFI_CSI_STABLE_NS;
+    double phase1 = 0.35;
+    double phase2 = -0.90;
+    double path1_gain = 26.0;
+    double path2_gain = 15.0;
+    double direct_gain = 48.0;
+
+    if (motion) {
+        double t = (cycle_pos - ESP32C3_WIFI_CSI_STABLE_NS) /
+                   (double)NANOSECONDS_PER_SECOND;
+
+        /*
+         * Human motion changes reflected-path phase and amplitude quickly in
+         * time, but each instantaneous frequency response remains smooth.
+         */
+        phase1 += 5.5 * sin(2.0 * G_PI * 1.7 * t);
+        phase2 += 7.0 * cos(2.0 * G_PI * 2.3 * t);
+        path1_gain = 34.0 + 10.0 * sin(2.0 * G_PI * 1.1 * t);
+        path2_gain = 24.0 + 8.0 * cos(2.0 * G_PI * 1.9 * t);
+        direct_gain = 42.0 + 4.0 * sin(2.0 * G_PI * 0.7 * t);
+    }
+
+    /* ESP32 CSI is interleaved imaginary/real data for each subcarrier. */
+    for (size_t i = 0; i + 1 < len; i += 2) {
+        double subcarrier = (double)(i / 2) - (double)(len / 4);
+        double path1_phase = phase1 + subcarrier * 0.055;
+        double path2_phase = phase2 - subcarrier * 0.130;
+        double real = direct_gain + path1_gain * cos(path1_phase) +
+                      path2_gain * cos(path2_phase) +
+                      esp32c3_wifi_csi_white_noise();
+        double imag = path1_gain * sin(path1_phase) +
+                      path2_gain * sin(path2_phase) +
+                      esp32c3_wifi_csi_white_noise();
+
+        buf[i] = (uint8_t)esp32c3_wifi_csi_clamp(imag);
+        buf[i + 1] = (uint8_t)esp32c3_wifi_csi_clamp(real);
+    }
+}
 
 static uint64_t esp32C3_wifi_read(void *opaque, hwaddr addr, unsigned int size)
 {
@@ -113,7 +179,7 @@ void Esp32_sendFrame(Esp32WifiState *s, mac80211_frame *frame,int length, int si
     wifi_pkt_rx_ctrl_c3_t *pkt=(wifi_pkt_rx_ctrl_c3_t *)header;
 
     *pkt=(wifi_pkt_rx_ctrl_c3_t){
-        .rssi=(signal_strength+(rand()%10)+96),
+        .rssi=(signal_strength+(rand()%10) -  60),
         .rate=11,
         .sig_len=length,
         .sig_len_copy=length,
@@ -165,10 +231,9 @@ void Esp32_sendFrame(Esp32WifiState *s, mac80211_frame *frame,int length, int si
                 sizeof(wifi_pkt_rx_ctrl_c3_t) -
                 ESP32C3_WIFI_RX_CTRL_HW_LEN);
 
-        for (int i = 0; i < csi_len; i++) {
-            header[ESP32C3_WIFI_RX_CTRL_HW_LEN + i] =
-                (uint8_t)((i & 0x1f) - 16);
-        }
+        esp32c3_wifi_generate_csi(header + ESP32C3_WIFI_RX_CTRL_HW_LEN,
+                                  csi_len,
+                                  qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
     }
 
     memcpy(header + sizeof(wifi_pkt_rx_ctrl_c3_t) + csi_len,
